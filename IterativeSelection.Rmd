@@ -1,0 +1,414 @@
+---
+title: 'Linking iterative forecasting to hypothesis testing'
+output:
+  html_document:
+    df_print: paged
+bibliography: null
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+diagnostics <- TRUE
+library(ecoforecastR)
+```
+
+Michael C. Dietze$^1$, Kathryn I. Wheeler$^1$, Colin Averill$^2$, Jennifer M. Bhatnagar$^3$, John R. Foster$^1$, Shannon L. LaDeau $^4$, Kathleen Weathers$^4$, Zoey R. Werbin$^3$,  Katherine A. Zarada$^1$
+
+$^1$Earth and Environment, Boston University, Boston, MA
+
+$^2$Department of Environmental Systems Sciences, ETH Zurich, Zurich, Switzerland
+
+$^3$Department of Biology, Boston University, Boston, MA
+
+$^4$Cary Insitute of Ecosystem Studies, Millbrook, NY
+
+# Abstract
+
+For ESA: look into sources/citations about out-of-sample validation, experimental design, and not examining data / "sampling stopping rules” / p-hacking
+
+
+paper idea: tutorial on how to perform hypothesis testing within ecological forecasting
+Could start with a null model (long-term mean or random walk), propose one or more alternatives and, with a simulated data experiment, see how long it takes to refute the null (and show exactly how that’s done). Simultaneously, can assess model performance to better understand failures and propose refined models.
+
+
+# Introduction
+
+A number of recent papers have highlighted the idea of using iterative forecasting in a hypothesis testing framework as a way of accelerating learning. The proposed cycle involves using models (which embody our current hypotheses) to make out-of-sample predictions into the future, collecting data, validating results, and then assimilating this new data into models to update parameters and/or state variables. It is argued that this cycle closely mirrors the cyclic nature of the scientific method, places particular emphasis on having specific, refutable predictions, and that the validation against yet-to-be-collected data acts as preregistration and guards against overfitting. But how do you do this in practice, and how do tasks like model selection change in an iterative setting? We explore these issues using both a simulated data experiment (true model and parameters known) and a **reanalysis of a vegetation phenology forecast**. Specifically, model selection was conducted in these case studies both using an iterative approach and using **standard post-hoc model fitting, model selection, and cross-validation**. For both we used a Bayesian state-space framework, with the simulation exploring a series of dynamic linear models of increasing complexity and the phenology modeling using nonlinear logistic models with different meteorological covariates.
+
+notes:
+
+"But if we wait long enough and test after every data point, we will eventually cross any arbitrary line of statistical significance, even if there’s no real difference at all. We can’t usually collect infinite samples, so in practice this doesn’t always happen, but poorly implemented stopping rules still increase false positive rates significantly." https://www.statisticsdonewrong.com/regression.html
+J. P. Simmons, L. D. Nelson, U. Simonsohn. False-Positive Psychology: Undisclosed Flexibility in Data Collection and Analysis Allows Presenting Anything as Significant. Psychological Science, 22:1359–1366, 2011.
+S. Todd, A. Whitehead, N. Stallard, J. Whitehead. Interim analyses and sequential designs in phase III studies. British Journal of Clinical Pharmacology, 51:394–399, 2001.
+
+https://en.wikipedia.org/wiki/Multiple_comparisons_problem
+
+What is the difference between accumulation of information and *multiple comparisons*
+* Data are not random -- not a new, *independent* test (e.g. cumulative meta-analysis)
+* Test is cumulative, not performing a test for each individual obs.
+* Not different hypotheses, same hypothesis
+* multiple *sequential* tests, not *simultaneous* tests
+
+Repeated tests, how bad can it be: http://allendowney.blogspot.com/2011/10/repeated-tests-how-bad-can-it-be.html
+* scary example, but not sure I understand how they reach the conclusions they do (p-values are uniformily distributed and follow a 0-1 bound random walk?)
+
+
+
+http://liveatthewitchtrials.blogspot.com/2011/09/ab-testing-is-khan-doing-it-wrong.html
+
+"Now there are ways you can tell that something is statistically significant really early in a test. "Bayesian Statistics and the Efficiency and Ethics of Clinical Trials (Berry 2004 Stat Sci)" deals with these." 
+
+
+"_How not to run an A/B test_ explains why and the effects of looking before all the test is finished" 
+http://www.evanmiller.org/how-not-to-run-an-ab-test.html
+
+*repeated significance testing errors*
+
+"significance calculation makes a critical assumption that you have probably violated without even realizing it: that the sample size was fixed in advance.  If instead of deciding ahead of time, “this experiment will collect exactly 1,000 observations,” you say, “we’ll run it until we see a significant difference,” all the reported significance levels become meaningless."
+
+"Repeated significance testing always increases the rate of false positives"
+
+"Instead of reporting significance of ongoing experiments, report how large of an effect can be detected given the current sample size"
+
+"Bayesian experiment design: With Bayesian experiment design you can stop your experiment at any time and make perfectly valid inferences. Given the real-time nature of web experiments, Bayesian design seems like the way forward."
+
+
+Simulations showing the problems of repeated significance testing when NULL is true
+```{r, echo=FALSE}
+## aside: A/B testing example
+pa = 0.5
+pb = 0.5
+nboot = 500
+nt = 5000
+pval <- pdiff <- na <- nb <- matrix(NA,nt,nboot)
+for(i in 1:nboot){
+  na[,i] <- cumsum(rbinom(nt,1,pa)) 
+  nb[,i] <- cumsum(rbinom(nt,1,pb))
+  pdiff[,i] <- (na[,i]-nb[,i])/(1:nt)
+}
+plot(pdiff[,1],ylim=range(pdiff),type = 'n',log='x')
+for(i in seq_len(nboot)){
+  lines(pdiff[,i])
+}
+hist(pdiff[nt,])
+
+tbl <- array(NA,c(nt,2,2))
+for(i in 1:nboot){
+  tbl[,1,1] <- na[,i]
+  tbl[,1,2] <- nb[,i]
+  tbl[,2,1] <- (1:nt)-na[,i]
+  tbl[,2,2] <- (1:nt)-nb[,i]
+  for(t in 10:nt){ ## set some minimum threshold
+    pval[t,i] <- chisq.test(tbl[t,,])$p.value
+  }
+}
+plot(pval[,1],ylim=c(0,1),xlim=c(10,nt),type = 'n',log='x')
+for(i in seq_len(nboot)){
+  lines(pval[,i],col=i)
+}
+sum(apply(pval,2,min,na.rm=TRUE) < 0.05)/nboot ## cumulative rate of false positives
+sum(pval[nt,] < 0.05)/nboot ## rate of false positives at end point
+```
+
+
+
+# Methods
+
+## The null model
+
+The most common null model for iterative timeseries is the random walk -- tomorrow is like today and any change is purely chance (stochastic process)  [[aside, for non-timeseries the most common null is a constant mean; make sure this would be included in the set of candidate models]]
+
+$$X_{t+1} \sim N(X_t,\sigma^2)$$
+
+Example
+```{r, echo=FALSE, cache=TRUE}
+## Code to simulate first example DLM
+NT <- 100
+X  <- rep(NA,NT)
+X[1] <- 160  ## initial condition
+b <- c(-5, ## harvest
+       1.5, ## 1+r
+       -0.5/200, ## -r/K
+       0, ## 
+       0.25) ## Z/r interaction
+tau <- 2 ## process error
+
+## covariates
+#pbar = 750
+#psd = 250
+#precip <- rgamma(NT,pbar^2/psd^2,pbar/psd^2)
+Z = rnorm(NT,sin(2*pi/12*(1:NT-1)),0.2)
+#plot(Z,type='l')
+
+## forward simulation
+for(t in 1:(NT-1)){
+  X[t+1] <- max(0,rnorm(1,b[1] + b[2]*X[t] + b[3]*X[t]^2 + b[4]*Z[t] + b[5]*Z[t]*X[t],tau))
+}
+
+## observation error
+Nplot = 1
+Y = X*0
+for(t in 1:NT){
+  Y[t] <- mean(rpois(Nplot,X[t]))
+}
+if(diagnostics) plot(Y,type='l',xlab="time")
+#plot(X,Y)
+#plot(Z[-NT],diff(Y))
+```
+
+
+In the simplest case, where we assume observations are perfect, if we want to make predictions in this system there are two uncertainties we need to contend with, the process error itself and our parameteric uncertainty about the value of the process error parameter.
+
+If we were to start from scratch fitting this model to new data...
+
+```{r}
+## non-state space fit (no obs error)
+my.model = "  
+  model{
+  
+  #### Priors
+  tau ~ dgamma(a_add,r_add)
+  sigma <- 1/sqrt(tau)
+
+  #### Process Model
+  for(t in 2:n){
+    x[t]~dnorm(x[t-1],tau)
+  }
+
+}"
+  
+#### prep data
+mydat<-list(x=Y,n=length(Y),a_add=0.1,r_add=0.1)
+
+## fit model
+mc3 <- jags.model(file=textConnection(my.model),data=mydat,n.chains=3)
+mc3.out <- coda.samples(model=mc3, variable.names="tau", n.iter=5000)
+plot(mc3.out)
+
+dic3 <- dic.samples(mc3,1000)
+
+mc3.m <- as.matrix(window(mc3.out,start = 500)) ## convert to matrix, remove burn-in
+tau3 <- quantile(1/sqrt(mc3.m),c(0.025,0.5,0.975))
+```
+
+
+As we begin to accumulate information, the parameteric uncertainty will decline asymptotically to zero, but the process error itself is irreducible, so the only way to improve predictions is to reduce the IC uncertainty. Since the process is stochastic, after each time step we would want to use new observations to figure out where we actually ended up.
+
+
+```{r,results='hide'}
+#### RANDOM WALK, ITERATIVE FIT
+dt    <- 4
+nstep <-length(Y)/dt
+a_add <- r_add <- rep(0.1,nstep+1)
+mp <- xp <- tauI <- matrix(NA,nstep,3)
+mq <- xq <- rep(NA,nstep) #quantile of prediction
+mv <- xv <- rep(NA,nstep) #variance of prediction
+dicI <- matrix(NA,nstep,2)     #Iterative updating of DIC
+for(i in seq_len(nstep)){
+
+  ## prep data, pad with NA for prediction
+  mydat<-list(x=c(Y[(1:dt)+(i-1)*dt],NA),n=dt+1,a_add=a_add[i],r_add=r_add[i])
+
+  ## fit model
+  mcI <- jags.model(file=textConnection(my.model),data=mydat,n.chains=3)
+  mcI.out <- coda.samples(model=mcI, variable.names=c("tau",paste0("x[",dt+1,"]")), n.iter=5000)
+  
+  ## calculate DIC
+  DIC <- dic.samples(mcI,1000)
+  dicI[i,1] <- sum(DIC$deviance)
+  dicI[i,2] <- sum(DIC$penalty)
+  
+  ## save parameters
+  mcI.m <- as.matrix(mcI.out) ## convert to matrix, remove burn-in
+  tauI[i,] <- quantile(1/sqrt(mcI.m[,1]),c(0.025,0.5,0.975))
+  tbar <- mean(1/sqrt(mcI.m[,1]))
+    
+  ## update priors
+  m  = mean(mcI.m[,1])
+  s2 = var(mcI.m[,1])
+  a_add[i+1] <- m^2/s2
+  r_add[i+1] <- m/s2
+  
+  if(FALSE){
+  hist(mcI.m,probability = TRUE)
+  xseq <- seq(min(mcI.m),max(mcI.m),length=1000)
+  lines(xseq,dgamma(xseq,a_add[i+1],r_add[i+1]))
+  }
+  
+  ## save predictions
+  xp[i,] <- quantile(mcI.m[,2],c(0.025,0.5,0.975)) ## prediction quantiles
+  xq[i]  <- sum(mcI.m[,2] < Y[i*dt+1])/nrow(mcI.m) ## Bayes pval, predictive error
+  xv[i]  <- var(mcI.m[,2])                         ## prediction variance
+  
+  ## prediction @ parameter mean
+  mp[i,] <- Y[i*dt]+c(-1.96,0,1.96)*tbar
+  mq[i]  <- pnorm(Y[i*dt+1],Y[i*dt],tbar)
+  mv[i]  <- tbar^2
+}
+```
+
+
+```{r, results='hide'}
+## RANDOM WALK, full refit each chunk
+ar <- rr <- rep(0.1,nstep+1)
+mpr <- xpr <- tauR <- matrix(NA,nstep,3)
+mqr <- xqr <- rep(NA,nstep) #quantile of prediction
+mvr <- xvr <- rep(NA,nstep) #variance of prediction
+dicR <- matrix(NA,nstep,2)     #Iterative updating of DIC
+for(i in seq_len(nstep)){
+
+  ## prep data, pad with NA for prediction
+  mydat<-list(x=c(Y[1:(dt*i)],NA),n=i*dt+1,a_add=ar[1],r_add=rr[1])
+
+  ## fit model
+  mcR <- jags.model(file=textConnection(my.model),data=mydat,n.chains=3)
+  mcR.out <- coda.samples(model=mcR, variable.names=c("tau",paste0("x[",dt*i+1,"]")), n.iter=5000)
+  
+  ## calculate DIC
+  DIC <- dic.samples(mcR,1000)
+  dicR[i,1] <- sum(DIC$deviance)
+  dicR[i,2] <- sum(DIC$penalty)
+  
+  ## save parameters
+  mcR.m <- as.matrix(mcR.out) ## convert to matrix, remove burn-in
+  tauR[i,] <- quantile(1/sqrt(mcR.m[,1]),c(0.025,0.5,0.975))
+  tbar <- mean(1/sqrt(mcR.m[,1]))
+    
+  ## update priors
+  m  = mean(mcR.m[,1])
+  s2 = var(mcR.m[,1])
+  ar[i+1] <- m^2/s2
+  rr[i+1] <- m/s2
+  
+  if(FALSE){
+  hist(mcR.m,probability = TRUE)
+  xseq <- seq(min(mcR.m),max(mcR.m),length=1000)
+  lines(xseq,dgamma(xseq,ar[i+1],rr[i+1]))
+  }
+  
+  ## save predictions
+  xpr[i,] <- quantile(mcR.m[,2],c(0.025,0.5,0.975)) ## prediction quantiles
+  xqr[i]  <- sum(mcR.m[,2] < Y[i*dt+1])/nrow(mcR.m) ## Bayes pval, predictive error
+  xvr[i]  <- var(mcR.m[,2])                         ## prediction variance
+  
+  ## prediction @ parameter mean
+  mpr[i,] <- Y[i*dt]+c(-1.96,0,1.96)*tbar
+  mqr[i]  <- pnorm(Y[i*dt+1],Y[i*dt],tbar)
+  mvr[i]  <- tbar^2
+}
+
+```
+
+
+```{r}
+## plot of SD: refit
+tseq <- seq(dt,by=dt,length=nstep)
+plot(tseq,tauR[,2],ylim=range(tauR),type='l',ylab="Standard Deviation")
+ciEnvelope(tseq,tauR[,1],tauR[,3],col=col.alpha("green",0.5))
+points(length(Y),tau3[2],col="red")
+lines(rep(length(Y),2),tau3[c(1,3)],col="red")
+
+## plot of SD being iteratively constrained
+plot(tseq,tauI[,2],ylim=range(tauI),type='l',ylab="Standard Deviation")
+ciEnvelope(tseq,tauI[,1],tauI[,3],col=col.alpha("orange",0.5))
+ciEnvelope(tseq,tauR[,1],tauR[,3],col=col.alpha("green",0.5)) # refit
+lines(tseq,tauR[,2],col="green")                              # refit
+points(length(Y),tau3[2],col="blue")
+lines(rep(length(Y),2),tau3[c(1,3)],col="blue")
+legend("topright",legend=c("refit","iterative","offline"),col=c("green","orange","blue"),lwd=3) 
+
+
+## plots of posterior parameters: iterative
+plot(ar,col="green",type='l',lwd=3)
+lines(a_add,col="orange",lwd=3)
+legend("topleft",legend=c("refit","iterative"),col=c("green","orange"),lwd=3) 
+
+plot(rr,col="green",type='l',lwd=3)
+lines(r_add,col="orange",lwd=3)
+legend("topleft",legend=c("refit","iterative"),col=c("green","orange"),lwd=3) 
+
+## predictions: iterative
+tpred <- seq(dt+1,by=dt,length=nstep)
+plot(tpred,xp[,2],ylim=range(xp),main="One step ahead predictions")
+ciEnvelope(tpred,xp[,1],xp[,3],col=col.alpha("blue",0.5))
+ciEnvelope(tpred,mp[,1],mp[,3],col=col.alpha("orange",0.2))
+points(tpred,Y[tpred],col="red")
+
+## predictions: refit
+tpred <- seq(dt+1,by=dt,length=nstep)
+plot(tpred,xpr[,2],ylim=range(xpr),main="One step ahead predictions")
+ciEnvelope(tpred,xpr[,1],xpr[,3],col=col.alpha("blue",0.5))
+ciEnvelope(tpred,mpr[,1],mpr[,3],col=col.alpha("orange",0.2))
+points(tpred,Y[tpred],col="red")
+
+## quantiles
+par(mfrow=c(2,2))
+hist(xq)
+hist(xqr)
+hist(mq)
+hist(mqr)
+par(mfrow=c(1,1))
+
+## predictive error partitioning
+plot(tpred,pmin(1,mv/xv),type='l',main="Process Error",
+     ylab="proportion predictive variance",col="orange",lwd=3)
+lines(tpred,pmin(1,mvr/xvr),col="green",lwd=3)
+legend("bottomright",legend=c("refit","iterative"),col=c("green","orange"),lwd=3) 
+
+## DIC
+DICi <- cumsum(apply(dicI,1,sum))
+DICr <- apply(dicR,1,sum)
+DIC3 <- cumsum(apply(rbind(dic3$deviance,dic3$penalty),2,sum))
+plot(DIC3,type='l',ylim=range(c(DICi,DIC3,DICr)),ylab="DIC",lwd=3,col="blue")
+#lines(tseq,cumsum(dicI[,1]),col="orange")
+lines(tseq-1,DICi,col="orange",lwd=3)
+lines(tseq-1,DICr,col="green",lwd=3)
+legend("topleft",legend=c("refit","iterative","offline"),col=c("green","orange","blue"),lwd=3) 
+```
+
+While the process error is not reducible within a model, it is reducible through model improvement. Three primary ways: observation error, internal dynamics, external drivers.
+
+Obs error: partitioning observation error from stochasticitiy in the process itself. Explain basic state space. Sampling uncertainty. observation operators.
+
+```{r}
+## state-space random
+RW <- fit_dlm(model=list(obs="Y"),data=data.frame(Y=Y))
+plot(RW$params)
+```
+
+
+
+Internal: could go from $N_{t+1} = N_{t}$ to $N_{t+1} = rN_{t}$ [trend, exp growth/decline] to more complex cases that would introduce stability $N_{t+1} = b_0 + b_1N_{t}$ to $N_{t+1} = b_0 + b_1N_{t} + b_2N_t^2$ etc to more complex models -- matrix models to represent different pools, age/stage classes, food webs; nonlinear models; mechanistic models, etc
+
+External: $N_{t+1} = b_0 + b_IN_{t} + b_1Z_1 +b_2Z_2$
+covariates
+Special case of b_I -> 0
+
+## Case study 1: Simple models, Offline refit
+
+Multiple competing models represent alternative hypotheses
+
+Want to predict with all of them? Model averaging (unweighted -> weighted). Here we want to think about not just averaging, but selection.
+
+The simplest approach to updating, is to refit models.
+
+Example.
+
+## Case study 2: Simple models, Iterative update
+
+## Case study 3: Iterative update + adaptive UA: sampling
+
+## Case study 4: Iterative update + adaptive model analysis (model proposal; branching paths)
+
+# Results
+
+For choosing among competing models, we employ an out-of-sample predictive loss metric, which aims to balance validation error and total predictive uncertainty (parameter, initial condition, driver, and process errors). In an iterative context, all predictive uncertainties are initially at their maximum (prior) values, and thus the simplest model (random walk) initially dominates. After 10-20 time steps, parameter and process error estimates begin to converge for simple models and we are able to begin selecting among alternative model structures and covariates. Model selection takes longer for the phenological models, where the key information comes from once-a-year-transitions, and thus choosing between hypotheses requires multiple years of data regardless of measurement frequency. In addition to simple iterative model selection, we also assessed the ability of iterative validation metrics to help diagnose potential covariates and models structural errors. Finally, posthoc data analysis consistently selected for more complex model structures, and had a higher rate of overfitting than the iterative approach. Similarly, we found that multi-model iterative approaches need to retain alternative models beyond the point when a candidate model is ‘significant’ to prevent the premature ‘chance’ convergence on incorrect models.
+
+# Discussion
+
+# Acknowledgements
+
+# References
+
+
+
