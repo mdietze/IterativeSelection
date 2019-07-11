@@ -394,6 +394,28 @@ The simplest approach to updating, is to refit models.
 
 Example.
 
+```{r}
+## testing
+iterative_fit_dlm(model=list(obs="Y"),data=data.frame(Y=Y),"refit",dt=50)
+fit_dlm(model=list(fixed=fixed,obs="Y"),data=data.frame(Y=Y,Z=Z))
+foo = ParseFixed(fixed="~ 1 + X + X^2 + Z + Z*X",cov.data = data.frame(Y=Y,Z=Z))
+
+
+## define candidate models
+fixed <- list()
+fixed[[1]] = "RW"
+fixed[[3]] = "~ 1"
+fixed[[4]] = "~ Z"
+fixed[[5]] = "~ X^2"
+
+SFO <- list() ## simple fit, offline
+to.run = c(1,2,3,4) ## list of models to run
+for(i in to.run){
+  SFO[[i]] <- iterative_fit_dlm(model=list(fixed=fixed[[i]],obs="Y"),data=data.frame(Y=Y,Z=Z),"refit",dt=50)
+}
+```
+
+
 ## Case study 2: Simple models, Iterative update
 
 ## Case study 3: Iterative update + adaptive UA: sampling
