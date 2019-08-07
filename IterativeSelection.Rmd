@@ -20,7 +20,7 @@ $^2$Department of Environmental Systems Sciences, ETH Zurich, Zurich, Switzerlan
 
 $^3$Department of Biology, Boston University, Boston, MA
 
-$^4$Cary Insitute of Ecosystem Studies, Millbrook, NY
+$^4$Cary Institute of Ecosystem Studies, Millbrook, NY
 
 # Abstract
 
@@ -34,6 +34,11 @@ Could start with a null model (long-term mean or random walk), propose one or mo
 # Introduction
 
 A number of recent papers have highlighted the idea of using iterative forecasting in a hypothesis testing framework as a way of accelerating learning. The proposed cycle involves using models (which embody our current hypotheses) to make out-of-sample predictions into the future, collecting data, validating results, and then assimilating this new data into models to update parameters and/or state variables. It is argued that this cycle closely mirrors the cyclic nature of the scientific method, places particular emphasis on having specific, refutable predictions, and that the validation against yet-to-be-collected data acts as preregistration and guards against overfitting. But how do you do this in practice, and how do tasks like model selection change in an iterative setting? We explore these issues using both a simulated data experiment (true model and parameters known) and a **reanalysis of a vegetation phenology forecast**. Specifically, model selection was conducted in these case studies both using an iterative approach and using **standard post-hoc model fitting, model selection, and cross-validation**. For both we used a Bayesian state-space framework, with the simulation exploring a series of dynamic linear models of increasing complexity and the phenology modeling using nonlinear logistic models with different meteorological covariates.
+
+Q1: Is model selection valid when applied iteratively?
+Q2: Does model selection change with forecast horizon?
+Q3: Can we incrementally update models rather than refitting them from scratch? 
+
 
 notes:
 
@@ -78,36 +83,46 @@ Simulations showing the problems of repeated significance testing when NULL is t
 ## aside: A/B testing example
 pa = 0.5
 pb = 0.5
-nboot = 500
-nt = 5000
-pval <- pdiff <- na <- nb <- matrix(NA,nt,nboot)
-for(i in 1:nboot){
-  na[,i] <- cumsum(rbinom(nt,1,pa)) 
-  nb[,i] <- cumsum(rbinom(nt,1,pb))
-  pdiff[,i] <- (na[,i]-nb[,i])/(1:nt)
+nboot = 2000
+nt = 2500
+ABfile = "ABtest.RData"
+if(file.exists(ABfile)){
+  load(ABfile)
+} else {
+  pval <- pdiff <- na <- nb <- matrix(NA,nt,nboot)
+  for(i in 1:nboot){
+    na[,i] <- cumsum(rbinom(nt,1,pa)) 
+    nb[,i] <- cumsum(rbinom(nt,1,pb))
+    pdiff[,i] <- (na[,i]-nb[,i])/(1:nt)
+  }
+  tbl <- array(NA,c(nt,2,2))
+  for(i in 1:nboot){
+    if(i %% 100 == 0) print(i)
+    tbl[,1,1] <- na[,i]
+    tbl[,1,2] <- nb[,i]
+    tbl[,2,1] <- (1:nt)-na[,i]
+    tbl[,2,2] <- (1:nt)-nb[,i]
+    for(t in 10:nt){ ## set some minimum threshold
+      pval[t,i] <- chisq.test(tbl[t,,])$p.value
+    }
+  }
+  save(pval,pdiff,file=ABfile)
 }
-plot(pdiff[,1],ylim=range(pdiff),type = 'n',log='x')
+
+plot(pdiff[,1],ylim=range(pdiff),type = 'n',log='x',ylab="pa - pb",xlab="Trials",xlim = c(6,nt))
 for(i in seq_len(nboot)){
   lines(pdiff[,i])
 }
 hist(pdiff[nt,])
 
-tbl <- array(NA,c(nt,2,2))
-for(i in 1:nboot){
-  tbl[,1,1] <- na[,i]
-  tbl[,1,2] <- nb[,i]
-  tbl[,2,1] <- (1:nt)-na[,i]
-  tbl[,2,2] <- (1:nt)-nb[,i]
-  for(t in 10:nt){ ## set some minimum threshold
-    pval[t,i] <- chisq.test(tbl[t,,])$p.value
-  }
-}
-plot(pval[,1],ylim=c(0,1),xlim=c(10,nt),type = 'n',log='x')
+
+plot(pval[,1],ylim=c(0,1),xlim=c(10,nt),type = 'n',log='x',xlab="Trials", ylab = "P-value")
 for(i in seq_len(nboot)){
   lines(pval[,i],col=i)
 }
 sum(apply(pval,2,min,na.rm=TRUE) < 0.05)/nboot ## cumulative rate of false positives
 sum(pval[nt,] < 0.05)/nboot ## rate of false positives at end point
+
 ```
 
 
@@ -120,7 +135,10 @@ The most common null model for iterative timeseries is the random walk -- tomorr
 
 $$X_{t+1} \sim N(X_t,\sigma^2)$$
 
-Example
+Simulated data example: True model
+
+$$X_{t+1} \sim N \left( b_1 + b_2 X_t + b_3 X_t^2 + b_4 Z_t + b_5 Z_t X_t, \sigma^2 \right)$$
+
 ```{r, echo=FALSE, cache=TRUE}
 ## Code to simulate first example DLM
 NT <- 100
@@ -394,34 +412,277 @@ The simplest approach to updating, is to refit models.
 
 Example.
 
+```{r, results="hide"}
+#foo = ParseFixed(fixed=models[[i]],cov.data = data.frame(Y=Y,Z=Z) )
+
+SFO.file = "SFO.RData"
+if(file.exists(SFO.file)){
+  load(SFO.file)
+} else {
+  
+  ## define candidate models
+  models <- list()
+  models[[1]] = ""
+  models[[2]] = "~ X - 1"
+  models[[3]] = "~ 1 + X"
+  models[[4]] = "~ 1 + X + Z" 
+  models[[5]] = "~ 1 + X + X^2"
+  models[[6]] = "~ 1 + X + Z + X*Z"
+  models[[7]] = "~ 1 + X + X^2 + Z"
+  models[[8]] = "~ 1 + X + X^2 + X*Z"
+  models[[9]] = "~ 1 + X + X^2 + Z + X*Z"
+  
+  dt=4
+  nf = 12 
+  nstep <-length(Y)/dt
+  SFO <- list() ## simple fit, offline
+  to.run = 3:9 ## list of models to run
+  for(i in to.run){
+    SFO[[i]] <- iterative_fit_dlm(model=list(fixed=models[[i]],obs="Y",n.iter=10000),
+                                  data=data.frame(Y=Y,Z=Z),"refit",dt=dt,nf=nf)
+  }
+  save(SFO,Y,Z,file=SFO.file)
+}
+```
+
 ```{r}
-## testing
-iterative_fit_dlm(model=list(obs="Y"),data=data.frame(Y=Y),"refit",dt=50)
-fit_dlm(model=list(fixed=fixed,obs="Y"),data=data.frame(Y=Y,Z=Z))
-foo = ParseFixed(fixed="~ 1 + X + X^2 + Z + Z*X",cov.data = data.frame(Y=Y,Z=Z))
-foo = ParseFixed(fixed="~ 1 + X",cov.data = data.frame(Y=Y,Z=Z))
-
-
-## define candidate models
-fixed <- list()
-fixed[[1]] = ""
-fixed[[2]] = "~ X - 1"
-fixed[[3]] = "~ 1 + X"
-fixed[[4]] = "~ 1 + X + Z" 
-fixed[[5]] = "~ 1 + X + X^2"
-fixed[[6]] = "~ 1 + X + Z + X*Z"
-fixed[[7]] = "~ 1 + X + X^2 + Z"
-fixed[[8]] = "~ 1 + X + X^2 + Z + X*Z" # failed
-
-SFO <- list() ## simple fit, offline
-to.run = 1:8 ## list of models to run
-for(i in to.run){
-  SFO[[i]] <- iterative_fit_dlm(model=list(fixed=fixed[[i]],obs="Y"),data=data.frame(Y=Y,Z=Z),"refit",dt=50)
+## Visualize iterative forecast
+for(mv in 1:length(SFO)){
+  dims = dim(SFO[[mv]]$xp)
+  saveGIF({
+    for(t in 1:dims[1]){
+      tf = seq(tseq[t],length=dims[3],by=1)
+      pch = rep(1, length(Y))
+      pch[1:tseq[t]] = 18
+      plot(Y,type='b',xlab="time",lty=2,pch = pch)
+      ciEnvelope(tf,SFO[[mv]]$xp[t,1,],SFO[[mv]]$xp[t,3,],col=col.alpha("blue",0.5))
+    }
+  },movie.name = paste0("fx",mv,".gif"),interval=0.5)
 }
 ```
 
 
+```{r}
+#################### Conventional Analysis of case 1 ##############
+ 
+## who won? DIC
+last <- nrow(SFO[[1]]$dic) 
+DIC1 <- sapply(SFO,function(x){x$dic[last,]})
+DIC1 <- rbind(DIC1,apply(DIC1,2,sum))
+dDIC1 <- DIC1[3,] - min(DIC1[3,])+1
+plot(dDIC1,type='b',ylim=sort(dDIC1)[c(1,ceiling(length(dDIC1)*.8))]*c(0.99,1.1),
+     ylab="DIC",xlab="Model",log="y")
+abline(v=8,col=2,lwd=2,lty=2)
+abline(v=which.min(dDIC1),col=3,lwd=2,lty=2)
+legend("bottomleft",legend=c("best","true"),col=3:2,lty=2,lwd=3)
+
+## process error
+PE <- sapply(SFO,function(x){1/sqrt(as.data.frame(
+                        x$paramStats[[last]]$quantiles)["tau_add",c(1,3,5)])})
+plot(unlist(PE[2,]),ylim=range(PE),log="y",type='b',lwd=2,
+     col="blue",xlab="model",ylab="Std. Dev. (log scale)",main="Process Error")
+ciEnvelope(seq_len(ncol(PE)),PE[3,],PE[1,],col=col.alpha("blue",0.5))
+abline(v=8,col=2,lwd=2,lty=2)
+abline(v=which.min(unlist(PE[2,])),col=3,lwd=2,lty=2)
+legend("topright",legend=c("best","true"),col=3:2,lty=2,lwd=3)
+
+## did they get the parameters right?
+extractParamCI <- function(x,p){ ## x = results, p = parameter name
+  foo <- as.data.frame(t(x$paramStats[[last]]$quantiles))[c(1,3,5),p]
+  if(is.null(foo)) foo = rep(NA,3)
+  return(foo)
+}
+params <- c("tau_add","betaIntercept","betaX","betaX2","betaZ","betaX_Z")
+param.true <- c(1/sqrt(tau),b)   ## convert tau to prec
+param.true[3] = param.true[3]-1  ## remove RW
+param.log = rep("",length(params)); param.log[1] = "y"
+for(i in seq_along(params)){
+  pCI <- sapply(SFO,extractParamCI,p=params[i])
+  if(sum(!is.na(pCI))>0){
+    yl  <- range(pCI,na.rm = TRUE)
+    plot(pCI[2,],ylim=yl,type='b',lwd=2,log=param.log[i],
+         col="blue",xlab="model",ylab="parameter value",main=params[i])
+    polygon(c(7.6,7.6,8.4,8.4),yl[c(1,2,2,1)],col=col.alpha("green",0.5))
+    for(j in 1:ncol(pCI)){
+      lines(rep(j,2),pCI[c(1,3),j],col="blue",lwd=2)
+    }
+    abline(h=param.true[i],col=2,lwd=3,lty=2)
+    abline(h=0,lty=3)
+  }
+}
+
+######  **** STEP AHEAD PLOTS ARE CURRENTLY WITH THE REFIT, NOT THE FINAL MODEL *****
+## one-step-ahead predictive error: plots  
+tpred <- seq(dt+1,by=dt,length=nstep)
+for(i in seq_along(SFO)){
+  xp <- SFO[[i]]$xp[,,1]
+  plot(tpred,xp[,2],ylim=range(Y),main=paste("One step ahead predictions: Model",i))
+  ciEnvelope(tpred,xp[,1],xp[,3],col=col.alpha("blue",0.5))
+  points(tpred,Y[tpred],col="red")
+}
+
+## one-step-ahead predictive error: RMSE
+RMSE1.1p <- sapply(SFO,function(x){
+  sqrt(mean((x$xp[,4,1]-Y[tpred+1])^2,na.rm = TRUE))})
+plot(RMSE1.1p,ylim=range(RMSE1.1p),type='p',lwd=2,log="y",
+     col="blue",xlab="model",ylab="Std. Dev. (log scale)",main="RMSE: one step ahead")
+abline(v=8,col=2,lwd=2,lty=2)
+abline(v=which.min(RMSE1.1p),col=3,lwd=2,lty=2)
+abline(h=sd(Y),lty=2,col="grey")  ## chance
+legend("topleft",legend=c("best","true","chance"),col=c(3:2,"grey"),lty=2,lwd=3)
+
+############### LESS Conventional Analyses of case 1 ##############
+
+## CURRENTLY WITH THE REFIT, NOT THE FINAL MODEL ##
+## will differentially penalize more complex models
+## need to fit final model and then add code to make n-step ahead predictions
+
+## posterior quantiles
+for(i in seq_along(SFO)){
+  xq <- SFO[[i]]$xp[,6,1]
+  hist(xq,main=paste("Model",i),xlim=c(0,1))
+}
+
+## n-step ahead predictive error (do you select a different model?)
+RMSE1.np <- matrix(NA,nf,length(SFO))
+for(i in seq_len(nf)){
+  RMSE1.np[i,] <- sapply(SFO,function(x){
+                    sqrt(mean((x$xp[,4,i]-Y[tpred+i])^2,na.rm = TRUE))})
+}
+plot(RMSE1.np[,1],ylim=c(min(RMSE1.np),2*sd(Y)),lwd=3,
+     log='y',type='l',xlab="lead time",
+     ylab="Std. Dev. (log scale)",main="RMSE: n-step ahead")
+for(i in 2:length(SFO)){
+  lines(RMSE1.np[,i],col=i,lwd=3)
+}
+abline(h=sd(Y),lty=2,col="grey")
+#abline(v=8,col=2,lwd=2,lty=2)
+#abline(v=which.min(RMSE1.1p),col=3,lwd=2,lty=2)
+sel = which(RMSE1.1p < sd(Y))
+legend("topleft",legend=paste("M",sel),col=sel,lwd=3)
+
+
+## risk of false positives
+
+```
+
+Conclusions:
+* predictive error (RMSE) is probably the best overall metric
+    * should also be reflected in Deviance?
+* "best" model changes with lead time
+
+```{r}
+#################### Time-evolving Analysis of case 1 ##############
+
+## Deviance vs time
+DIC1.t <- matrix(NA,length(SFO),length(tpred))
+for(i in seq_along(SFO)){
+  DIC1.t[i,] <- apply(SFO[[i]]$dic,1,sum)/(tpred-1)
+}
+DIC1.t = DIC1.t - min(DIC1.t) + 1
+plot(DIC1.t[1,],type='n',ylim=c(min(DIC1.t),quantile(DIC1.t,0.8)),
+     ylab="DIC/n",xlab="Model",log="y")
+for(i in seq_along(SFO)){
+  lines(DIC1.t[i,],col=i)
+}
+sel <- seq_along(SFO)
+legend("topright",legend=paste("M",sel),col=sel,lwd=2,horiz=TRUE,cex=0.7)
+
+## Model weight (Deviance) vs time
+
+## RMSE at different lags vs time
+RMSE1.te <- array(NA,c(length(SFO),nf,length(tpred))) ## te = time evolving
+for(m in seq_along(SFO)){
+  for(i in seq_len(nf)){
+    for(t in 1:length(tpred)){
+      RMSE1.te[m,i,t] <- sqrt(mean((SFO[[m]]$xp[1:t,4,i]-Y[tpred[1:t]+i])^2,na.rm = TRUE))
+    }
+  }
+}
+RMSE1.te[is.nan(RMSE1.te)] <- NA
+n = seq_along(tpred)
+qlo = 1/sqrt(qgamma(0.975,n/2,n/2))
+qhi = 1/sqrt(qgamma(0.025,n/2,n/2))
+for(j in 1:nf){
+  plot(tpred,RMSE1.te[1,j,],ylim=c(min(RMSE1.te,na.rm = TRUE),2*sd(Y)),lwd=3,
+       log='y',type='l',xlab="time",
+       ylab="Std. Dev. (log scale)",main=paste0("RMSE evolution: ",j,"-step ahead"))
+  for(i in 1:length(SFO)){
+     lines(tpred,RMSE1.te[i,j,],col=i,lwd=5)
+     ciEnvelope(tpred,RMSE1.te[i,j,]*qlo,RMSE1.te[i,1,]*qhi,col=col.alpha(i,0.25))
+  }
+  abline(h=sd(Y),lty=2,col="grey")
+  sel = which(RMSE1.1p < sd(Y))
+  legend("topleft",legend=paste("M",sel),col=sel,lwd=3,horiz = TRUE)
+}
+
+
+
+## predictive variance vs time, multiple lags
+for(i in seq_len(nf)){
+  plot(tpred,tpred,type='n',ylim=c(5,2*sd(Y)),lwd=3,
+       log='y',xlab="time", ylab="Std. Dev. (log scale)",
+       main=paste0("Predictive Error evolution: ",i,"-step ahead"))
+  for(m in seq_along(SFO)){
+    lines(tpred,sqrt(SFO[[m]]$xp[,5,i]),col=m,lwd=3)
+  }
+  abline(h=sd(Y),lty=2,col="grey")
+  sel = seq_along(SFO)
+  legend("topleft",legend=paste("M",sel),col=sel,lwd=3,cex=0.7,horiz = TRUE)
+}
+
+## predictive loss
+for(i in seq_len(nf)){
+  plot(tpred,tpred,type='n',ylim=c(5,4*sd(Y)),lwd=3,
+       log='y',xlab="time", ylab="Std. Dev. (log scale)",
+       main=paste0("Predictive Loss evolution: ",i,"-step ahead"))
+  for(m in seq_along(SFO)){
+    lines(tpred,sqrt(SFO[[m]]$xp[,5,i]+RMSE1.te[m,i,]^2),col=m,lwd=3)
+  }
+#  abline(h=sd(Y),lty=2,col="grey")
+  sel = seq_along(SFO)
+  legend("topleft",legend=paste("M",sel),col=sel,lwd=3,cex=0.7,horiz = TRUE)
+}
+
+## Model weight  vs time, multiple lags?
+MW1.te <- array(NA,c(length(SFO),nf,length(tpred)))
+for(i in seq_len(nf)){
+  for(m in seq_along(SFO)){ ## calculate PL precisions
+    MW1.te[m,i,] <- 1/(SFO[[m]]$xp[,5,i]+RMSE1.te[m,i,]^2)
+  }
+  for(t in seq_along(tpred)){ ## normalize
+    MW1.te[,i,t] = MW1.te[,i,t]/sum(MW1.te[,i,t])
+  }
+}
+for(i in seq_len(nf)){
+ barplot(MW1.te[,i,],col=1:length(SFO), xlim=c(1, length(tpred) + 6.5),
+         main=paste0("PL model weight evolution: ",i,"-step ahead")) 
+ legend(10,0.5,legend=paste0("M",sel),fill=sel,cex=0.7,
+        x=length(tpred)+4.75, y=1.0,bty='n')
+}
+
+
+```
+
+
+## Part 2 -- What about the false positive problem?
+
+* Compare RW to univariate DLM via numerical simulation (many simulated data sets)
+  * how often do we select DLM when RW is 'true'?
+  
+* linear DLM to quadratic DLM (logistic)
+
+* internal only vs covariates
+
+
+
 ## Case study 2: Simple models, Iterative update
+
+
+```{r}
+
+```
+
 
 ## Case study 3: Iterative update + adaptive UA: sampling
 
