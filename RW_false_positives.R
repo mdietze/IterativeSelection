@@ -1,7 +1,7 @@
 ## Iterative model selection: Random walk vs. DLM
 ## Goal: determine the rate of false positives when null model is true (RW)
 ##   subject to early stopping
-devtools::install_github("EcoForecast/EF_Activities")
+devtools::install_github("EcoForecast/EcoforecastR")
 library(ecoforecastR)
 
 ## Settings & true parameters
