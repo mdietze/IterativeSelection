@@ -5,7 +5,7 @@ devtools::install_github("EcoForecast/EcoforecastR")
 library(ecoforecastR)
 
 ## Settings & true parameters
-nboot = 10 ## number of pseudodata simulations
+nboot = 1000 ## number of pseudodata simulations
 nt = 100  ## simulation length
 nf = 4    ## number of steps ahead to forecast & evaluate
 dt = 4    ## number of steps between refits
@@ -16,6 +16,9 @@ models <- list()
 models[[1]] = ""
 models[[2]] = "~ 1 + X"
 fp <- list()
+
+tpred <- seq(dt+1,by=dt,length=nfit)
+
 
 ## model selection metrics to store
 DICfp = matrix(NA,nboot,nfit)
@@ -30,7 +33,7 @@ for(b in seq_len(nboot)){
   
   ## Fit models
   for(i in seq_along(models)){
-    fp[[i]] <- iterative_fit_dlm(model=list(fixed=models[[i]],obs="Y",n.iter=10000),
+    fp[[i]] <- ecoforecastR:::iterative_fit_dlm(model=list(fixed=models[[i]],obs="Y",n.iter=10000),
                                   data=data.frame(Y=Yb),"refit",dt=dt,nf=nf)
   }
   
@@ -44,14 +47,14 @@ for(b in seq_len(nboot)){
   for(m in seq_along(fp)){
     for(i in seq_len(nf)){
       for(t in 1:length(tpred)){
-        RMSEfp[m,i,t,b] <- sqrt(mean((fp[[m]]$xp[1:t,4,i]-Yb[tpred[1:t]+i])^2,na.rm = TRUE))
+        RMSEfp[m,i,t,b] <- sqrt(mean((fp[[m]]$xp[1:t,4,i]-Yb[tpred[1:t]+i-1])^2,na.rm = TRUE))
       }
-      PLfp[m,i,,b] <- sqrt(SFO[[m]]$xp[,5,i]+RMSEfp[m,i,,b]^2)
+      PLfp[m,i,,b] <- sqrt(fp[[m]]$xp[,5,i]+RMSEfp[m,i,,b]^2)
     }
   }
   
   ## save periodically
-  if(b %% 3 == 0){
+  if(b %% 50 == 0){
     print(paste("saving",b))
     save(DICfp,RMSEfp,PLfp,file="RWfp.Rdata")
     print("done")
